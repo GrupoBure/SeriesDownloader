@@ -53,6 +53,13 @@ function Advance {
     $seriesFolder = Join-Path $root $item.series
     New-Item -ItemType Directory -Path $seriesFolder -Force | Out-Null
     $path = Join-Path $seriesFolder $name
+    if ($item.sub -and $item.sub.Length -gt 0) {
+      $subFile = Join-Path $seriesFolder ('Capitulo_{0:D2}.vtt' -f [int]$item.number)
+      if (-not (Test-Path $subFile)) {
+        try { Invoke-WebRequest -Uri $item.sub -UseBasicParsing -TimeoutSec 20 -OutFile $subFile; Write-Host ('Subtitulos: ' + [IO.Path]::GetFileName($subFile)) -ForegroundColor Magenta }
+        catch { Write-Warning ('No se pudieron obtener subtitulos de ' + $name) }
+      }
+    }
     if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0)) { $script:completed++; continue }
     $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
@@ -101,7 +108,7 @@ try {
         if ($page -notmatch '/\d+$') { $page += '/1' }
         $response = Invoke-WebRequest -Uri $page -UseBasicParsing -TimeoutSec 25
         $html = $response.Content.Replace('\"','"')
-        $pattern = '"number":(\d+),"servers":\[\{[\s\S]*?"url":"([^"]+)","hash":"([A-Za-z0-9_-]+)"'
+        $pattern = '"number":(\d+),"servers":\[\{[\s\S]*?"url":"([^"]+)","hash":"([A-Za-z0-9_-]+)","subtitleUrl":(null|"([^"]+)")'
         $matches = [regex]::Matches($html,$pattern)
         $items = New-Object System.Collections.ArrayList
         $seen = @{}
@@ -114,7 +121,9 @@ try {
           if (-not [Uri]::TryCreate($original,[UriKind]::Absolute,[ref]$originalUri)) { continue }
           $source = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
           if ($originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com)$') { $source = $original }
-          [void]$items.Add(@{number=$n;url=$source})
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
         }
         if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
         $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
@@ -130,10 +139,12 @@ try {
         $valid = $true
         foreach ($item in $new) {
           $uri = $null
+          $subtitleUri = $null
           if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or ($uri.Host -notin @('suikora.com','www.suikora.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com)$') -or $uri.AbsolutePath -notmatch '\.m3u8$' -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
-        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series}) }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub}) }
         Advance
         Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
       } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
