@@ -90,6 +90,29 @@ try {
       $path = $ctx.Request.Url.AbsolutePath
       if ($path -eq '/status' -and $ctx.Request.HttpMethod -eq 'GET') {
         Reply $ctx 200 @{running=($null -ne $process); current=$(if($current){$current.name}else{''}); pending=$queue.Count; completed=$completed; failed=$failed; folder=$root}
+      } elseif ($path -eq '/analyze' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $data = ConvertFrom-Json -InputObject $reader.ReadToEnd()
+        $uri = $null
+        if (-not [Uri]::TryCreate([string]$data.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.Host -ne 'suikora.com' -or $uri.AbsolutePath -notmatch '^/es/drama/[a-z0-9-]+(/\d+)?/?$') { Reply $ctx 400 @{error='Solo se admiten enlaces públicos de series de Suikora'}; continue }
+        $page = $uri.GetLeftPart([UriPartial]::Path).TrimEnd('/')
+        if ($page -notmatch '/\d+$') { $page += '/1' }
+        $response = Invoke-WebRequest -Uri $page -UseBasicParsing -TimeoutSec 25
+        $html = $response.Content.Replace('\"','"')
+        $pattern = '"number":(\d+),"servers":\[\{[\s\S]*?"hash":"([A-Za-z0-9_-]+)"'
+        $matches = [regex]::Matches($html,$pattern)
+        $items = New-Object System.Collections.ArrayList
+        $seen = @{}
+        foreach ($match in $matches) {
+          $n = [int]$match.Groups[1].Value
+          if ($seen.ContainsKey($n)) { continue }
+          $seen[$n] = $true
+          [void]$items.Add(@{number=$n;url=('https://suikora.com/s/'+$match.Groups[2].Value+'/index.m3u8?full=1')})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
       } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
         if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
         $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
