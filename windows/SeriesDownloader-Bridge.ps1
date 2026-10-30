@@ -99,7 +99,7 @@ try {
         if ($page -notmatch '/\d+$') { $page += '/1' }
         $response = Invoke-WebRequest -Uri $page -UseBasicParsing -TimeoutSec 25
         $html = $response.Content.Replace('\"','"')
-        $pattern = '"number":(\d+),"servers":\[\{[\s\S]*?"hash":"([A-Za-z0-9_-]+)"'
+        $pattern = '"number":(\d+),"servers":\[\{[\s\S]*?"url":"([^"]+)","hash":"([A-Za-z0-9_-]+)"'
         $matches = [regex]::Matches($html,$pattern)
         $items = New-Object System.Collections.ArrayList
         $seen = @{}
@@ -107,7 +107,12 @@ try {
           $n = [int]$match.Groups[1].Value
           if ($seen.ContainsKey($n)) { continue }
           $seen[$n] = $true
-          [void]$items.Add(@{number=$n;url=('https://suikora.com/s/'+$match.Groups[2].Value+'/index.m3u8?full=1')})
+          $original = $match.Groups[2].Value.Replace('\/','/')
+          $originalUri = $null
+          if (-not [Uri]::TryCreate($original,[UriKind]::Absolute,[ref]$originalUri)) { continue }
+          $source = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
+          if ($originalUri.Host -match '(^|\.)wolftv\.online$') { $source = $original }
+          [void]$items.Add(@{number=$n;url=$source})
         }
         if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
         $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
@@ -123,7 +128,7 @@ try {
         $valid = $true
         foreach ($item in $new) {
           $uri = $null
-          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.Host -notin @('suikora.com','www.suikora.com') -or $uri.AbsolutePath -notmatch '\.m3u8$' -or [int]$item.number -lt 1 -or [int]$item.number -gt 999) { $valid=$false; break }
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or ($uri.Host -notin @('suikora.com','www.suikora.com') -and $uri.Host -notmatch '(^|\.)wolftv\.online$') -or $uri.AbsolutePath -notmatch '\.m3u8$' -or [int]$item.number -lt 1 -or [int]$item.number -gt 999) { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
         foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url}) }
