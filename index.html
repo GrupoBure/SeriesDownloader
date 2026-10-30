@@ -34,6 +34,7 @@ function msg(t,kind=''){ $('message').textContent=t;$('message').className='noti
 function update(){const n=episodes.filter(e=>e.checked).length;$('selected').textContent=n;$('generate').disabled=!n;$('copy').disabled=!n;$('direct').disabled=!(n&&connected);$('count').textContent=episodes.length? n+' de '+episodes.length+' seleccionados':'Aún no hay fuente seleccionada';}
 function render(){ $('chapters').replaceChildren();for(const e of episodes){const label=document.createElement('label');label.className='chapter';const input=document.createElement('input');input.type='checkbox';input.checked=e.checked;input.addEventListener('change',()=>{e.checked=input.checked;update()});label.append(input,document.createTextNode('Capítulo '+String(e.n).padStart(2,'0')));$('chapters').append(label)} $('all').disabled=$('none').disabled=!episodes.length;update();}
 async function analyze(){let raw=$('url').value.trim();if(!raw){msg('Primero pega una dirección.','warn');return}let url;try{url=new URL(raw);if(!['https:','http:'].includes(url.protocol))throw Error()}catch{msg('La dirección debe empezar con https:// o http://','warn');return}
+if(url.hostname==='masdramas.com'&&url.protocol==='http:'&&/\.m3u8$/i.test(url.pathname)){url.protocol='https:';$('url').value=url.href}
 $('manualFields').classList.toggle('hidden',!/\.m3u8$/i.test(url.pathname));
 const host=url.hostname.toLowerCase();
 if(host==='suikora.com'||host==='www.suikora.com'){
