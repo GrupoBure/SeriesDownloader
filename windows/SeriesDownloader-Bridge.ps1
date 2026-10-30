@@ -50,11 +50,13 @@ function Advance {
     $item = $script:queue[0]
     $script:queue.RemoveAt(0)
     $name = 'Capitulo_{0:D2}.mp4' -f [int]$item.number
-    $path = Join-Path $root $name
+    $seriesFolder = Join-Path $root $item.series
+    New-Item -ItemType Directory -Path $seriesFolder -Force | Out-Null
+    $path = Join-Path $seriesFolder $name
     if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0)) { $script:completed++; continue }
-    $partial = Join-Path $root ('parcial_' + $name)
+    $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
-    $log = Join-Path $root ('log_' + $item.number + '.txt')
+    $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
     $script:current = @{name=$name;destination=$path;partial=$partial;log=$log}
     $argsText = '-hide_banner -loglevel warning -stats -nostdin -y -i "' + $item.url + '" -c copy "' + $partial + '"'
     $script:process = Start-Process -FilePath 'ffmpeg.exe' -ArgumentList $argsText -PassThru -WindowStyle Hidden -RedirectStandardError $log
@@ -111,7 +113,7 @@ try {
           $originalUri = $null
           if (-not [Uri]::TryCreate($original,[UriKind]::Absolute,[ref]$originalUri)) { continue }
           $source = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
-          if ($originalUri.Host -match '(^|\.)wolftv\.online$') { $source = $original }
+          if ($originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com)$') { $source = $original }
           [void]$items.Add(@{number=$n;url=$source})
         }
         if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
@@ -128,10 +130,10 @@ try {
         $valid = $true
         foreach ($item in $new) {
           $uri = $null
-          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or ($uri.Host -notin @('suikora.com','www.suikora.com') -and $uri.Host -notmatch '(^|\.)wolftv\.online$') -or $uri.AbsolutePath -notmatch '\.m3u8$' -or [int]$item.number -lt 1 -or [int]$item.number -gt 999) { $valid=$false; break }
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or ($uri.Host -notin @('suikora.com','www.suikora.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com)$') -or $uri.AbsolutePath -notmatch '\.m3u8$' -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
-        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url}) }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series}) }
         Advance
         Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
       } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
