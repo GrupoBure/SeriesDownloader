@@ -23,6 +23,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     try {
       await chrome.storage.session.set({[KEY(id)]:{sourceTabId:sender.tab.id,requestId:message.requestId,created:Date.now()}});
       await chrome.alarms.create(KEY(id),{delayInMinutes:TTL_MS/60000});
+      console.info("[Series Downloader] Detección iniciada", {tabId:id,site:page.hostname});
       await chrome.tabs.update(id,{url:page.href});
       respond({ok:true});
     } catch(e) {
@@ -34,19 +35,33 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 chrome.webRequest.onBeforeRequest.addListener(details => {
   void (async () => {
-    const key=KEY(details.tabId);
-    const session=(await chrome.storage.session.get(key))[key];
-    if (!session || Date.now()-session.created>TTL_MS) return;
     let parsed;try {parsed=new URL(details.url);} catch {return;}
     if (parsed.protocol!=="https:" || !parsed.pathname.toLowerCase().endsWith(".m3u8")) return;
     if (!(parsed.hostname==="masdramas.com" || parsed.hostname.endsWith(".hotplot.vip"))) return;
+    let key=KEY(details.tabId);
+    let session=(await chrome.storage.session.get(key))[key];
+    if (!session && details.tabId===-1) {
+      // Algunas solicitudes emitidas por workers no llevan tabId. Solo
+      // asociarlas si existe exactamente una detección pendiente del sitio.
+      const initiator=details.initiator||"";
+      const matchingOrigin=(parsed.hostname==="masdramas.com" && initiator==="https://masdramas.com") ||
+        (parsed.hostname.endsWith(".hotplot.vip") && initiator==="https://hotplot.ai");
+      if (matchingOrigin) {
+        const stored=await chrome.storage.session.get(null);
+        const pending=Object.entries(stored).filter(([k,v])=>k.startsWith("episode_")&&v&&Date.now()-v.created<TTL_MS);
+        if (pending.length===1) {[key,session]=pending[0];}
+      }
+    }
+    console.info("[Series Downloader] Solicitud HLS",{host:parsed.hostname,tabId:details.tabId,initiator:details.initiator,asociada:!!session});
+    if (!session || Date.now()-session.created>TTL_MS) return;
     if (parsed.hostname==="masdramas.com" && /\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname)) {
       parsed.pathname=parsed.pathname.replace(/\/s3hls\/[012]\.m3u8$/i,"/s3hls/2.m3u8");
     }
     await chrome.storage.session.remove(key);
     await chrome.alarms.clear(key);
+    console.info("[Series Downloader] Video identificado, enviando a la página");
     report(session.sourceTabId,{type:"CAPTURED",requestId:session.requestId,url:parsed.href});
-  })().catch(()=>{});
+  })().catch(error=>console.error("[Series Downloader] Error de detección",error));
 },{urls:["https://masdramas.com/*","https://*.hotplot.vip/*"]});
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (!alarm.name.startsWith("episode_")) return;
