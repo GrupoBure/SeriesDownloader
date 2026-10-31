@@ -11,7 +11,7 @@ async function capture(tabId, url, via) {
   if(!session||session.captured||Date.now()-session.created>TTL_MS)return false;
   if(parsed.hostname==="masdramas.com"&&/\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname))
     parsed.pathname=parsed.pathname.replace(/\/s3hls\/[012]\.m3u8$/i,"/s3hls/2.m3u8");
-  if(parsed.hostname.endsWith(".hotplot.vip")&&!session.metaDelivered)
+  if(parsed.hostname.endsWith(".hotplot.vip")&&!(session.metaDelivered&&session.catalogDelivered))
     await chrome.storage.session.set({[key]:{...session,captured:true}});
   else {await chrome.storage.session.remove(key);await chrome.alarms.clear(key);}
   console.info("[Series Downloader] Video detectado",{via,host:parsed.hostname,tabId});
@@ -27,8 +27,19 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (message?.type === "EPISODE_META" && Number.isInteger(sender.tab?.id) && sender.url?.startsWith("https://hotplot.ai/")) {
     void (async()=>{
       const session=(await chrome.storage.session.get(KEY(sender.tab.id)))[KEY(sender.tab.id)];
-      if(session){report(session.sourceTabId,{type:"META",requestId:session.requestId,number:message.number,series:message.series});if(session.captured){await chrome.storage.session.remove(KEY(sender.tab.id));await chrome.alarms.clear(KEY(sender.tab.id));}else await chrome.storage.session.set({[KEY(sender.tab.id)]:{...session,metaDelivered:true}});}
+      if(session){report(session.sourceTabId,{type:"META",requestId:session.requestId,number:message.number,series:message.series});if(session.captured&&session.catalogDelivered){await chrome.storage.session.remove(KEY(sender.tab.id));await chrome.alarms.clear(KEY(sender.tab.id));}else await chrome.storage.session.set({[KEY(sender.tab.id)]:{...session,metaDelivered:true}});}
     })().catch(error=>console.error("[Series Downloader] Metadatos HotPlot",error));
+    return;
+  }
+  if (message?.type === "EPISODE_CATALOG" && Number.isInteger(sender.tab?.id) && sender.url?.startsWith("https://hotplot.ai/")) {
+    void (async()=>{
+      const session=(await chrome.storage.session.get(KEY(sender.tab.id)))[KEY(sender.tab.id)];
+      if(session&&Array.isArray(message.episodes)&&message.episodes.length<=999){
+        report(session.sourceTabId,{type:"CATALOG",requestId:session.requestId,series:message.series,episodes:message.episodes});
+        if(session.captured&&session.metaDelivered){await chrome.storage.session.remove(KEY(sender.tab.id));await chrome.alarms.clear(KEY(sender.tab.id));}
+        else await chrome.storage.session.set({[KEY(sender.tab.id)]:{...session,catalogDelivered:true}});
+      }
+    })().catch(error=>console.error("[Series Downloader] Catálogo HotPlot",error));
     return;
   }
   if (message?.type !== "START") return;
