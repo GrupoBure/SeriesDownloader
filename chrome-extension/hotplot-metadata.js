@@ -40,6 +40,16 @@ function collect() {
     break;
   }
 }
+// El reproductor puede iniciar antes de que Next.js termine de hidratar el título.
+// El puente solicita una nueva lectura cuando ya detectó el video.
+chrome.runtime.onMessage.addListener(message=>{
+  if(message?.type==='REQUEST_HOTPLOT_METADATA'){
+    reported=false;
+    catalogReported=false;
+    collect();
+    setTimeout(collect,1200);
+  }
+});
 collect();
 const observer=new MutationObserver(()=>{collect();if(reported&&catalogReported)observer.disconnect();});
 // run_at=document_start: document.documentElement puede ser null todavía.
