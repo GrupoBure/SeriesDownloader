@@ -8,6 +8,7 @@
   "background": {"service_worker": "background.js"},
   "content_scripts": [
     {"matches": ["https://grupobure.github.io/SeriesDownloader/*"], "js": ["content.js"], "run_at": "document_start"},
-    {"matches": ["https://hotplot.ai/*/watch/*"], "js": ["hotplot-metadata.js"], "run_at": "document_idle"}
+    {"matches": ["https://hotplot.ai/*/watch/*"], "js": ["hotplot-metadata.js", "media-observer.js"], "run_at": "document_start"},
+    {"matches": ["https://masdramas.com/series/*"], "js": ["media-observer.js"], "run_at": "document_start"}
   ]
 }
