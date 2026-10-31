@@ -3,7 +3,27 @@ const ORIGIN = "https://grupobure.github.io/SeriesDownloader/";
 const TTL_MS = 2 * 60 * 1000;
 const KEY = id => "episode_" + id;
 function report(tabId, payload) {chrome.tabs.sendMessage(tabId, payload, () => {void chrome.runtime.lastError;});}
+async function capture(tabId, url, via) {
+  let parsed;try{parsed=new URL(url);}catch{return false;}
+  if(parsed.protocol!=="https:"||!parsed.pathname.toLowerCase().endsWith(".m3u8")||
+     !(parsed.hostname==="masdramas.com"||parsed.hostname.endsWith(".hotplot.vip")))return false;
+  const key=KEY(tabId),session=(await chrome.storage.session.get(key))[key];
+  if(!session||session.captured||Date.now()-session.created>TTL_MS)return false;
+  if(parsed.hostname==="masdramas.com"&&/\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname))
+    parsed.pathname=parsed.pathname.replace(/\/s3hls\/[012]\.m3u8$/i,"/s3hls/2.m3u8");
+  if(parsed.hostname.endsWith(".hotplot.vip")&&!session.metaDelivered)
+    await chrome.storage.session.set({[key]:{...session,captured:true}});
+  else {await chrome.storage.session.remove(key);await chrome.alarms.clear(key);}
+  console.info("[Series Downloader] Video detectado",{via,host:parsed.hostname,tabId});
+  report(session.sourceTabId,{type:"CAPTURED",requestId:session.requestId,url:parsed.href});
+  return true;
+}
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if(message?.type==="MEDIA_FOUND"&&Number.isInteger(sender.tab?.id)&&
+      (sender.url?.startsWith("https://hotplot.ai/")||sender.url?.startsWith("https://masdramas.com/"))){
+    void capture(sender.tab.id,message.url,"reproductor").catch(e=>console.error("[Series Downloader] Error de observación",e));
+    return;
+  }
   if (message?.type === "EPISODE_META" && Number.isInteger(sender.tab?.id) && sender.url?.startsWith("https://hotplot.ai/")) {
     void (async()=>{
       const session=(await chrome.storage.session.get(KEY(sender.tab.id)))[KEY(sender.tab.id)];
@@ -61,12 +81,7 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
     }
     console.info("[Series Downloader] Solicitud HLS",{host:parsed.hostname,tabId:details.tabId,initiator:details.initiator,asociada:!!session});
     if (!session || session.captured || Date.now()-session.created>TTL_MS) return;
-    if (parsed.hostname==="masdramas.com" && /\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname)) {
-      parsed.pathname=parsed.pathname.replace(/\/s3hls\/[012]\.m3u8$/i,"/s3hls/2.m3u8");
-    }
-    if(parsed.hostname.endsWith(".hotplot.vip")&&!session.metaDelivered){await chrome.storage.session.set({[key]:{...session,captured:true}});}else{await chrome.storage.session.remove(key);await chrome.alarms.clear(key);}
-    console.info("[Series Downloader] Video identificado, enviando a la página");
-    report(session.sourceTabId,{type:"CAPTURED",requestId:session.requestId,url:parsed.href});
+    await capture(Number(key.slice("episode_".length)),parsed.href,"red Chrome");
   })().catch(error=>console.error("[Series Downloader] Error de detección",error));
 },{urls:["https://masdramas.com/*","https://*.hotplot.vip/*"]});
 chrome.alarms.onAlarm.addListener(async alarm => {
