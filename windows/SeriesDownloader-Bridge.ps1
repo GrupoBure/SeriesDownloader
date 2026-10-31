@@ -32,7 +32,7 @@ function Reply($ctx, [int]$code, $payload) {
 }
 
 function EmbedSubtitles($video, $subtitle, $mkv) {
-  if (-not (Test-Path $subtitle) -or (Test-Path $mkv)) { return }
+  if (-not (Test-Path $subtitle) -or ((Test-Path $mkv) -and (HasAudio $mkv))) { return }
   $temporary = $mkv + '.partial.mkv'
   if (Test-Path $temporary) { Remove-Item -LiteralPath $temporary -Force }
   & ffmpeg -hide_banner -loglevel error -nostdin -y -i $video -i $subtitle -map '0:v?' -map '0:a?' -map '1:0' -c copy -c:s srt -metadata:s:s:0 language=spa -disposition:s:0 default $temporary
@@ -40,6 +40,12 @@ function EmbedSubtitles($video, $subtitle, $mkv) {
     Move-Item -LiteralPath $temporary -Destination $mkv -Force
     Write-Host ('MKV con subtitulos: ' + [IO.Path]::GetFileName($mkv)) -ForegroundColor Green
   } else { Write-Warning ('No se pudo integrar el subtitulo: ' + $mkv) }
+}
+
+function HasAudio($path) {
+  if (-not (Test-Path $path)) { return $false }
+  $audio = & ffprobe -v error -select_streams 'a:0' -show_entries 'stream=codec_type' -of 'csv=p=0' $path 2>$null
+  return (([string]($audio -join ' ')).Trim()) -match 'audio'
 }
 
 function Advance {
@@ -54,6 +60,10 @@ function Advance {
       $duration = & ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $script:current.partial 2>$null
       $seconds = 0.0
       $playable = [double]::TryParse(([string]$duration),[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$seconds) -and $seconds -gt 1
+      if ($playable -and $script:current.requiresAudio -and -not (HasAudio $script:current.partial)) {
+        $playable = $false
+        Write-Warning ('El archivo no contiene pista de sonido: ' + $script:current.name)
+      }
     }
     if ($playable) {
       Move-Item -LiteralPath $script:current.partial -Destination $script:current.destination -Force
@@ -85,18 +95,24 @@ function Advance {
         catch { Write-Warning ('No se pudieron obtener subtitulos de ' + $name) }
       }
     }
-    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0)) { $script:completed++; continue }
-    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0)) {
+    $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$')
+    $audioUrl = if ($requiresAudio) { [string]$item.url -replace '/s3hls/2\.m3u8', '/s3hls/0.m3u8' } else { '' }
+    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv))) { $script:completed++; continue }
+    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) {
       EmbedSubtitles $path $subFile $mkv
       if (Test-Path $mkv) { $script:completed++ } else { $script:completed++; $script:warnings++; Write-Warning ('El MP4 existe, pero no se pudo crear el MKV con subtitulos') }
       continue
     }
-    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0)) { $script:completed++; continue }
+    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) { $script:completed++; continue }
     $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
     $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
-    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv}
-    $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -c copy "' + $partial + '"'
+    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio}
+    if ($requiresAudio) {
+      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -i "' + $audioUrl + '" -map 0:v:0 -map 1:a:0 -c copy "' + $partial + '"'
+    } else {
+      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -c copy "' + $partial + '"'
+    }
     $script:process = Start-Process -FilePath 'ffmpeg.exe' -ArgumentList $argsText -PassThru -WindowStyle Hidden -RedirectStandardError $log
     Write-Host ('Descargando: ' + $name) -ForegroundColor Cyan
     break
