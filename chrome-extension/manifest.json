@@ -6,5 +6,8 @@
   "permissions": ["webRequest", "tabs", "storage", "alarms"],
   "host_permissions": ["https://masdramas.com/*", "https://*.hotplot.vip/*"],
   "background": {"service_worker": "background.js"},
-  "content_scripts": [{"matches": ["https://grupobure.github.io/SeriesDownloader/*"], "js": ["content.js"], "run_at": "document_start"}]
+  "content_scripts": [
+    {"matches": ["https://grupobure.github.io/SeriesDownloader/*"], "js": ["content.js"], "run_at": "document_start"},
+    {"matches": ["https://hotplot.ai/*/watch/*"], "js": ["hotplot-metadata.js"], "run_at": "document_idle"}
+  ]
 }
