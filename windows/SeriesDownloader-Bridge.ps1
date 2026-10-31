@@ -180,6 +180,7 @@ try {
           if (-not [Uri]::TryCreate($original,[UriKind]::Absolute,[ref]$originalUri)) { continue }
           $source = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
           if ($originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com)$') { $source = $original }
+          if ($originalUri.Host -eq 'cdn.narto-drama.com' -and $originalUri.AbsolutePath -match '\.mp4$' -and $originalUri.Scheme -eq 'https') { $source = $original }
           $subtitle = ''
           if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
           [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
@@ -199,7 +200,7 @@ try {
         foreach ($item in $new) {
           $uri = $null
           $subtitleUri = $null
-          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or ($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip)$') -or $uri.AbsolutePath -notmatch '\.m3u8$' -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
           if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
