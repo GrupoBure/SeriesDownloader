@@ -19,6 +19,15 @@ Extensión opcional de Series Downloader para páginas de MasDramas y HotPlot qu
 
 Si no se detecta, todavía puedes pegar manualmente el HLS. Los enlaces firmados caducan: no los compartas.
 
+## Varios capítulos de MasDramas
+
+1. Pega una sola URL de la serie (`https://masdramas.com/series/nombre-de-la-serie`) o la de cualquier capítulo.
+2. Indica los números separados por comas, por ejemplo `8,16`, y pulsa **Detectar capítulos**.
+3. La extensión abre **un episodio a la vez**. Cuando se capture su lista HLS, abrirá el siguiente. Si el reproductor requiere pulsar Play, hazlo manualmente. No se omiten restricciones de acceso.
+4. Al finalizar, revisa los capítulos detectados y pulsa **Descargar directamente en Windows**. Si falta alguno, podrás reintentarlo por separado.
+
+Actualmente no podemos garantizar un catálogo completo desde una sola URL ni reproducir automáticamente capítulos bloqueados. Esta función evita copiar enlaces y prepara la cola de los episodios que indiques.
+
 ## Privacidad y límites
 
 - Observa exclusivamente solicitudes HLS de `masdramas.com` y `*.hotplot.vip` después de pulsar Analizar en nuestra página.
