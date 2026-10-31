@@ -13,6 +13,8 @@ window.addEventListener("message", (event) => {
     if (chrome.runtime.lastError || !response?.ok) report({type: "FAILED", requestId, reason: response?.error || "No se pudo abrir el capítulo"});
   });
 });
-chrome.runtime.onMessage.addListener((message) => { if (message?.type === "CAPTURED" || message?.type === "FAILED") report(message); });
+chrome.runtime.onMessage.addListener((message) => {
+  if (["CAPTURED", "FAILED", "META", "CATALOG"].includes(message?.type)) report(message);
+});
 report({type: "READY"});
 document.addEventListener("DOMContentLoaded", () => report({type: "READY"}), {once: true});
