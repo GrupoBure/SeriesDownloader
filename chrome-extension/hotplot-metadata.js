@@ -42,5 +42,9 @@ function collect() {
 }
 collect();
 const observer=new MutationObserver(()=>{collect();if(reported&&catalogReported)observer.disconnect();});
-observer.observe(document.documentElement,{childList:true,subtree:true});
-setTimeout(()=>observer.disconnect(),15000);
+// run_at=document_start: document.documentElement puede ser null todavía.
+// Observar document permite detectar el HTML y los scripts añadidos después.
+observer.observe(document,{childList:true,subtree:true});
+document.addEventListener('DOMContentLoaded',collect,{once:true});
+window.addEventListener('load',collect,{once:true});
+setTimeout(()=>{collect();observer.disconnect();},30000);
