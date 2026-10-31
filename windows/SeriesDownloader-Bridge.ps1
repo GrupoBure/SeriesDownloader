@@ -130,6 +130,18 @@ try {
       $path = $ctx.Request.Url.AbsolutePath
       if ($path -eq '/status' -and $ctx.Request.HttpMethod -eq 'GET') {
         Reply $ctx 200 @{running=($null -ne $process); current=$(if($current){$current.name}else{''}); pending=$queue.Count; completed=$completed; failed=$failed; warnings=$warnings; folder=$root}
+      } elseif ($path -eq '/metadata' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $data = ConvertFrom-Json -InputObject $reader.ReadToEnd()
+        $uri = $null
+        if (-not [Uri]::TryCreate([string]$data.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.Host -ne 'hotplot.ai' -or $uri.AbsolutePath -notmatch '^/[a-zA-Z-]+/watch/[a-f0-9-]+/?$') { Reply $ctx 400 @{error='Enlace de HotPlot inválido'}; continue }
+        $response = Invoke-WebRequest -Uri $uri.AbsoluteUri -UseBasicParsing -TimeoutSec 25
+        $html = $response.Content.Replace('\"','"')
+        $numberMatch = [regex]::Match($html,'"episodeNo":(\d+)')
+        $slugMatch = [regex]::Match($html,'"showSlug":"([a-z0-9-]+)"')
+        if (-not $numberMatch.Success -or -not $slugMatch.Success) { Reply $ctx 422 @{error='No se identificaron los datos del capítulo'}; continue }
+        $series = $slugMatch.Groups[1].Value -replace '-\d+$',''
+        Reply $ctx 200 @{number=[int]$numberMatch.Groups[1].Value;series=$series}
       } elseif ($path -eq '/analyze' -and $ctx.Request.HttpMethod -eq 'POST') {
         $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
         $data = ConvertFrom-Json -InputObject $reader.ReadToEnd()
