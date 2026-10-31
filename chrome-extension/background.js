@@ -4,6 +4,13 @@ const TTL_MS = 2 * 60 * 1000;
 const KEY = id => "episode_" + id;
 function report(tabId, payload) {chrome.tabs.sendMessage(tabId, payload, () => {void chrome.runtime.lastError;});}
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message?.type === "EPISODE_META" && Number.isInteger(sender.tab?.id) && sender.url?.startsWith("https://hotplot.ai/")) {
+    void (async()=>{
+      const session=(await chrome.storage.session.get(KEY(sender.tab.id)))[KEY(sender.tab.id)];
+      if(session){report(session.sourceTabId,{type:"META",requestId:session.requestId,number:message.number,series:message.series});if(session.captured){await chrome.storage.session.remove(KEY(sender.tab.id));await chrome.alarms.clear(KEY(sender.tab.id));}else await chrome.storage.session.set({[KEY(sender.tab.id)]:{...session,metaDelivered:true}});}
+    })().catch(error=>console.error("[Series Downloader] Metadatos HotPlot",error));
+    return;
+  }
   if (message?.type !== "START") return;
   if (!Number.isInteger(sender.tab?.id) || sender.url?.split(/[?#]/)[0] !== ORIGIN) {
     respond({ok:false,error:"Página de origen no autorizada"});return;
@@ -53,12 +60,11 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
       }
     }
     console.info("[Series Downloader] Solicitud HLS",{host:parsed.hostname,tabId:details.tabId,initiator:details.initiator,asociada:!!session});
-    if (!session || Date.now()-session.created>TTL_MS) return;
+    if (!session || session.captured || Date.now()-session.created>TTL_MS) return;
     if (parsed.hostname==="masdramas.com" && /\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname)) {
       parsed.pathname=parsed.pathname.replace(/\/s3hls\/[012]\.m3u8$/i,"/s3hls/2.m3u8");
     }
-    await chrome.storage.session.remove(key);
-    await chrome.alarms.clear(key);
+    if(parsed.hostname.endsWith(".hotplot.vip")&&!session.metaDelivered){await chrome.storage.session.set({[key]:{...session,captured:true}});}else{await chrome.storage.session.remove(key);await chrome.alarms.clear(key);}
     console.info("[Series Downloader] Video identificado, enviando a la página");
     report(session.sourceTabId,{type:"CAPTURED",requestId:session.requestId,url:parsed.href});
   })().catch(error=>console.error("[Series Downloader] Error de detección",error));
@@ -68,7 +74,7 @@ chrome.alarms.onAlarm.addListener(async alarm => {
   const session=(await chrome.storage.session.get(alarm.name))[alarm.name];
   if (!session) return;
   await chrome.storage.session.remove(alarm.name);
-  report(session.sourceTabId,{type:"FAILED",requestId:session.requestId,reason:"Pasaron dos minutos sin detectar la lista HLS. Comprueba que el video se reproduzca."});
+  report(session.sourceTabId,{type:"FAILED",requestId:session.requestId,reason:session.captured?"El video se detectó, pero no se pudo leer el número de episodio. Indícalo manualmente.":"Pasaron dos minutos sin detectar la lista HLS. Comprueba que el video se reproduzca."});
 });
 chrome.tabs.onRemoved.addListener(async tabId => {
   const key=KEY(tabId);
@@ -76,5 +82,5 @@ chrome.tabs.onRemoved.addListener(async tabId => {
   if (!session) return;
   await chrome.storage.session.remove(key);
   await chrome.alarms.clear(key);
-  report(session.sourceTabId,{type:"FAILED",requestId:session.requestId,reason:"Cerraste el capítulo antes de detectar video"});
+  if(!session.captured)report(session.sourceTabId,{type:"FAILED",requestId:session.requestId,reason:"Cerraste el capítulo antes de detectar video"});
 });
