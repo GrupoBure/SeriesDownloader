@@ -3,7 +3,7 @@
   "name": "Series Downloader - Detector de video",
   "version": "1.0.0",
   "description": "Detecta listas HLS al reproducir episodios y las devuelve exclusivamente a Series Downloader.",
-  "permissions": ["webRequest", "tabs"],
+  "permissions": ["webRequest", "tabs", "storage", "alarms"],
   "host_permissions": ["https://masdramas.com/*", "https://*.hotplot.vip/*"],
   "background": {"service_worker": "background.js"},
   "content_scripts": [{"matches": ["https://grupobure.github.io/SeriesDownloader/*"], "js": ["content.js"], "run_at": "document_start"}]
