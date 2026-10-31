@@ -16,6 +16,12 @@ async function capture(tabId, url, via) {
   else {await chrome.storage.session.remove(key);await chrome.alarms.clear(key);}
   console.info("[Series Downloader] Video detectado",{via,host:parsed.hostname,tabId});
   report(session.sourceTabId,{type:"CAPTURED",requestId:session.requestId,url:parsed.href});
+  if(parsed.hostname.endsWith('.hotplot.vip')){
+    // Reintento explícito una vez que el reproductor ya cargó.
+    chrome.tabs.sendMessage(tabId,{type:'REQUEST_HOTPLOT_METADATA'},()=>{
+      if(chrome.runtime.lastError)console.warn('[Series Downloader] No respondió el lector HotPlot',chrome.runtime.lastError.message);
+    });
+  }
   return true;
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
@@ -25,6 +31,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return;
   }
   if (message?.type === "EPISODE_META" && Number.isInteger(sender.tab?.id) && sender.url?.startsWith("https://hotplot.ai/")) {
+    console.info('[Series Downloader] Metadatos recibidos',{tabId:sender.tab.id,episode:message.number,series:message.series});
     void (async()=>{
       const session=(await chrome.storage.session.get(KEY(sender.tab.id)))[KEY(sender.tab.id)];
       if(session){report(session.sourceTabId,{type:"META",requestId:session.requestId,number:message.number,series:message.series});if(session.captured&&session.catalogDelivered){await chrome.storage.session.remove(KEY(sender.tab.id));await chrome.alarms.clear(KEY(sender.tab.id));}else await chrome.storage.session.set({[KEY(sender.tab.id)]:{...session,metaDelivered:true}});}
@@ -32,6 +39,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return;
   }
   if (message?.type === "EPISODE_CATALOG" && Number.isInteger(sender.tab?.id) && sender.url?.startsWith("https://hotplot.ai/")) {
+    console.info('[Series Downloader] Catálogo recibido',{tabId:sender.tab.id,total:message.episodes?.length});
     void (async()=>{
       const session=(await chrome.storage.session.get(KEY(sender.tab.id)))[KEY(sender.tab.id)];
       if(session&&Array.isArray(message.episodes)&&message.episodes.length<=999){
