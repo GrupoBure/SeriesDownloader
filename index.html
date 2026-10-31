@@ -56,7 +56,7 @@ window.addEventListener('message',event=>{
  if(data.type==='CATALOG'){
   if(batchActive)return;
   const entries=Array.isArray(data.episodes)?data.episodes.filter(e=>Number.isInteger(e.n)&&e.n>0&&e.n<=999&&/^[a-f0-9-]{36}$/.test(e.id)):[];
-  if(entries.length){hotCatalog=entries;hotCatalogSource=new URL($('url').value.trim()).href;$('batchFields').classList.remove('hidden');$('batchTotal').value=Math.max(...entries.map(e=>e.n));$('batchTotal').readOnly=true;$('batchTotalHelp').textContent='Total leído del catálogo de HotPlot. Los capítulos bloqueados no se intentarán descargar.';const free=entries.filter(e=>e.access==='FREE'&&e.hasMedia&&e.state==='PUBLISHED').length;$('batchHelp').textContent='HotPlot: '+entries.length+' capítulos en el catálogo, '+free+' gratuitos y disponibles; '+(entries.length-free)+' requieren acceso o no tienen video público. Se abrirá uno a la vez (máximo 100 por tanda).';msg('Catálogo HotPlot identificado: '+free+' capítulos públicos de '+entries.length+' anunciados. Elige Todos, Rango o números y pulsa Detectar capítulos seleccionados.','good')}
+  if(entries.length){hotCatalog=entries;hotCatalogSource=new URL($('url').value.trim()).href;$('batchFields').classList.remove('hidden');$('batchTotal').value=Math.max(...entries.map(e=>e.n));$('batchTotal').readOnly=true;$('batchTotalHelp').textContent='Total leído del catálogo de HotPlot. El acceso real se comprueba al reproducir cada capítulo.';const free=entries.filter(e=>e.access==='FREE').length,available=entries.filter(e=>e.hasMedia&&e.state==='PUBLISHED').length;$('batchHelp').textContent='HotPlot: '+entries.length+' capítulos, '+free+' etiquetados gratuitos. Se intentarán los '+available+' publicados, incluso los marcados con créditos: solo se agregarán si su video se reproduce. Se abre uno a la vez (máximo 100 por tanda).';msg('Catálogo HotPlot: '+entries.length+' capítulos identificados. Algunos figuran con créditos, pero comprobaremos la reproducción antes de descartarlos.','good')}
   return;
  }
  if(data.type==='META') {if(Number.isInteger(data.number)&&data.number>0&&data.number<=999&&/^[a-z0-9-]{1,80}$/.test(data.series||'')){$('manualNumber').value=data.number;$('manualSeries').value=data.series;if(batchActive)return;msg('HotPlot identificó el capítulo '+data.number+' de '+data.series.replaceAll('-',' ')+'.','good');if($('hlsUrl').value)analyze(true)}return}
@@ -78,13 +78,13 @@ function startBatch(){
  if(hot){
   if(hotCatalogSource!==source.href||!hotCatalog.length){msg('Primero pulsa Analizar enlace y espera a que HotPlot detecte su catálogo.','warn');return}
   const byNumber=new Map(hotCatalog.map(e=>[e.n,e]));
-  const allowed=list.map(n=>byNumber.get(n)).filter(e=>e&&e.access==='FREE'&&e.hasMedia&&e.state==='PUBLISHED');
+  const allowed=list.map(n=>byNumber.get(n)).filter(e=>e&&e.hasMedia&&e.state==='PUBLISHED');
   const skipped=list.length-allowed.length;
-  if(!allowed.length){msg('Ninguno de los capítulos seleccionados está disponible públicamente en HotPlot. '+skipped+' bloqueados o inexistentes.','warn');return}
+  if(!allowed.length){msg('Ninguno de los capítulos seleccionados aparece publicado con video en HotPlot.','warn');return}
   batchQueue=allowed.map(e=>({n:e.n,url:source.origin+'/'+source.pathname.split('/')[1]+'/watch/'+e.id}));
   batchSeries=$('manualSeries').value.trim();
   if(!/^[a-z0-9-]{1,80}$/.test(batchSeries)){msg('Espera a que HotPlot identifique también el nombre de la serie.','warn');return}
-  msg('Se procesarán '+allowed.length+' capítulos públicos; '+skipped+' bloqueados o inexistentes se omiten.','warn');
+  msg('Se intentarán '+allowed.length+' episodios publicados; '+skipped+' inexistentes o sin video se omiten. Los capítulos que pidan desbloqueo no se podrán capturar.','good');
  }else{
   batchSeries=m[1];batchQueue=list.map(n=>({n,url:'https://masdramas.com/series/'+batchSeries+'/episodio-'+n}));
  }
