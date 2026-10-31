@@ -86,7 +86,9 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
         (parsed.hostname.endsWith(".hotplot.vip") && initiator==="https://hotplot.ai");
       if (matchingOrigin) {
         const stored=await chrome.storage.session.get(null);
-        const pending=Object.entries(stored).filter(([k,v])=>k.startsWith("episode_")&&v&&Date.now()-v.created<TTL_MS);
+        // Una captura ya completada no debe bloquear la asociación del
+        // siguiente capítulo cuando Chrome omite tabId en la petición HLS.
+        const pending=Object.entries(stored).filter(([k,v])=>k.startsWith("episode_")&&v&&!v.captured&&Date.now()-v.created<TTL_MS);
         if (pending.length===1) {[key,session]=pending[0];}
       }
     }
