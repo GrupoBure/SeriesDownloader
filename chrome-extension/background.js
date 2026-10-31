@@ -19,6 +19,9 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
   let parsed; try {parsed = new URL(details.url);} catch {return;}
   if (parsed.protocol !== "https:" || !parsed.pathname.toLowerCase().endsWith(".m3u8")) return;
   if (!(parsed.hostname === "masdramas.com" || parsed.hostname.endsWith(".hotplot.vip"))) return;
+  // MasDramas sirve audio y video por separado. Los archivos 0/1 son audio;
+  // el 2 es video. Esperamos al 2 para no enviar una pista de audio como video.
+  if (parsed.hostname === "masdramas.com" && /\/s3hls\/\d+\.m3u8$/i.test(parsed.pathname) && !/\/s3hls\/2\.m3u8$/i.test(parsed.pathname)) return;
   active.delete(details.tabId);
   chrome.tabs.sendMessage(session.sourceTabId, {type: "CAPTURED", requestId: session.requestId, url: parsed.href}, () => {void chrome.runtime.lastError;});
 }, {urls: ["https://masdramas.com/*", "https://*.hotplot.vip/*"]});
