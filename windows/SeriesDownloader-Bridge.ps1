@@ -75,8 +75,17 @@ function Advance {
         if (-not (Test-Path $script:current.mkv)) { $script:warnings++; Write-Warning ('El MP4 se guardo, pero faltan subtitulos MKV para ' + $script:current.name) }
       }
     } else {
-      $script:failed++
-      Write-Host ('Error: ' + $script:current.name) -ForegroundColor Red
+      # Intentar la siguiente fuente ya identificada para este mismo episodio.
+      if ($script:current.fallbacks -and $script:current.fallbacks.Count -gt 0) {
+        $nextUrl = [string]$script:current.fallbacks[0]
+        $remaining = @($script:current.fallbacks | Select-Object -Skip 1)
+        $retry = @{number=$script:current.number;series=$script:current.series;url=$nextUrl;sub=$script:current.sub;embed=$script:current.embed;fallbacks=$remaining}
+        [void]$script:queue.Insert(0,$retry)
+        Write-Warning ('Fuente no disponible para ' + $script:current.name + '. Se intentara otra fuente identificada.')
+      } else {
+        $script:failed++
+        Write-Host ('Error: ' + $script:current.name + '. Revisa ' + $script:current.log) -ForegroundColor Red
+      }
     }
     $script:current = $null
   }
@@ -107,7 +116,7 @@ function Advance {
     $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
     $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
-    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio}
+    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio;number=$item.number;series=$item.series;sub=$item.sub;fallbacks=@($item.fallbacks)}
     if ($requiresAudio) {
       $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -i "' + $audioUrl + '" -map 0:v:0 -map 1:a:0 -c copy "' + $partial + '"'
     } else {
@@ -178,9 +187,301 @@ try {
           $original = $match.Groups[2].Value.Replace('\/','/')
           $originalUri = $null
           if (-not [Uri]::TryCreate($original,[UriKind]::Absolute,[ref]$originalUri)) { continue }
-          $source = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
-          if ($originalUri.Scheme -eq 'https' -and $originalUri.AbsolutePath -match '\.m3u8$' -and $originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|crazymaplestudios\.com)$') { $source = $original }
-          if ($originalUri.Host -eq 'cdn.narto-drama.com' -and $originalUri.AbsolutePath -match '\.mp4$' -and $originalUri.Scheme -eq 'https') { $source = $original }
+          $proxy = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
+          $source = $proxy
+          $fallbacks = @()
+          $trustedHls = $originalUri.Scheme -eq 'https' -and $originalUri.AbsolutePath -match '\.m3u8
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle;fallbacks=$fallbacks})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
+      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
+        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $raw = $reader.ReadToEnd()
+        $data = ConvertFrom-Json -InputObject $raw
+        $new = @($data.items)
+        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
+        $valid = $true
+        foreach ($item in $new) {
+          $uri = $null
+          $subtitleUri = $null
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) {
+          $safeFallbacks = @()
+          foreach ($alternate in @($item.fallbacks)) {
+            if ([string]::IsNullOrWhiteSpace([string]$alternate)) { continue }
+            $alternateUri = $null
+            if (-not [Uri]::TryCreate([string]$alternate,[UriKind]::Absolute,[ref]$alternateUri) -or $alternateUri.Scheme -ne 'https' -or $alternateUri.Host -ne 'suikora.com' -or $alternateUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/index\.m3u8
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+ -and $originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|crazymaplestudios\.com)
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
+      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
+        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $raw = $reader.ReadToEnd()
+        $data = ConvertFrom-Json -InputObject $raw
+        $new = @($data.items)
+        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
+        $valid = $true
+        foreach ($item in $new) {
+          $uri = $null
+          $subtitleUri = $null
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+
+          $trustedMp4 = $originalUri.Scheme -eq 'https' -and $originalUri.Host -eq 'cdn.narto-drama.com' -and $originalUri.AbsolutePath -match '\.mp4
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
+      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
+        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $raw = $reader.ReadToEnd()
+        $data = ConvertFrom-Json -InputObject $raw
+        $new = @($data.items)
+        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
+        $valid = $true
+        foreach ($item in $new) {
+          $uri = $null
+          $subtitleUri = $null
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+
+          if ($trustedHls -or $trustedMp4) {
+            $source = $original
+            if ($original -ne $proxy) { $fallbacks = @($proxy) }
+          }
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
+      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
+        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $raw = $reader.ReadToEnd()
+        $data = ConvertFrom-Json -InputObject $raw
+        $new = @($data.items)
+        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
+        $valid = $true
+        foreach ($item in $new) {
+          $uri = $null
+          $subtitleUri = $null
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+) { $valid=$false; break }
+            if ($safeFallbacks.Count -lt 3) { $safeFallbacks += [string]$alternate }
+          }
+          if (-not $valid) { break }
+          [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed;fallbacks=$safeFallbacks})
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Fuente alternativa no autorizada'}; continue }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+ -and $originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|crazymaplestudios\.com)
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
+      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
+        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $raw = $reader.ReadToEnd()
+        $data = ConvertFrom-Json -InputObject $raw
+        $new = @($data.items)
+        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
+        $valid = $true
+        foreach ($item in $new) {
+          $uri = $null
+          $subtitleUri = $null
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+
+          $trustedMp4 = $originalUri.Scheme -eq 'https' -and $originalUri.Host -eq 'cdn.narto-drama.com' -and $originalUri.AbsolutePath -match '\.mp4
+          $subtitle = ''
+          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
+          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
+        }
+        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
+        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
+        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
+        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
+      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
+        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
+        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
+        $raw = $reader.ReadToEnd()
+        $data = ConvertFrom-Json -InputObject $raw
+        $new = @($data.items)
+        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
+        $valid = $true
+        foreach ($item in $new) {
+          $uri = $null
+          $subtitleUri = $null
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+
+          if ($trustedHls -or $trustedMp4) {
+            $source = $original
+            if ($original -ne $proxy) { $fallbacks = @($proxy) }
+          }
           $subtitle = ''
           if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
           [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
