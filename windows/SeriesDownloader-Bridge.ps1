@@ -42,6 +42,12 @@ function EmbedSubtitles($video, $subtitle, $mkv) {
   } else { Write-Warning ('No se pudo integrar el subtitulo: ' + $mkv) }
 }
 
+function HasVideo($path) {
+  if (-not (Test-Path $path)) { return $false }
+  $video = & ffprobe -v error -select_streams 'v:0' -show_entries 'stream=codec_type' -of 'csv=p=0' $path 2>$null
+  return (([string]($video -join ' ')).Trim()) -match 'video'
+}
+
 function HasAudio($path) {
   if (-not (Test-Path $path)) { return $false }
   $audio = & ffprobe -v error -select_streams 'a:0' -show_entries 'stream=codec_type' -of 'csv=p=0' $path 2>$null
@@ -60,6 +66,10 @@ function Advance {
       $duration = & ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $script:current.partial 2>$null
       $seconds = 0.0
       $playable = [double]::TryParse(([string]$duration),[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$seconds) -and $seconds -gt 1
+      if ($playable -and $script:current.isDramaExpress -and -not (HasVideo $script:current.partial)) {
+        $playable = $false
+        Write-Warning ('DramaExpress: el archivo no contiene video reconocible: ' + $script:current.name)
+      }
       if ($playable -and $script:current.requiresAudio -and -not (HasAudio $script:current.partial)) {
         $playable = $false
         Write-Warning ('El archivo no contiene pista de sonido: ' + $script:current.name)
@@ -95,7 +105,8 @@ function Advance {
         catch { Write-Warning ('No se pudieron obtener subtitulos de ' + $name) }
       }
     }
-    $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$')
+    $isDramaExpress = ([string]$item.url -match '^https://cdn\.dramadizilerim\.xyz/https/[^/]+/.*\.m3u8(?:\?.*)?$')
+    $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$') -or $isDramaExpress
     $audioUrl = if ($requiresAudio) { [string]$item.url -replace '/s3hls/2\.m3u8', '/s3hls/0.m3u8' } else { '' }
     if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv))) { $script:completed++; continue }
     if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) {
@@ -107,8 +118,11 @@ function Advance {
     $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
     $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
-    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio}
-    if ($requiresAudio) {
+    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio;isDramaExpress=$isDramaExpress}
+    if ($isDramaExpress) {
+      $requestHeaders = "Origin: https://dramaexpress.net" + "`r`n" + "Referer: https://dramaexpress.net/" + "`r`n"
+      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -user_agent "Mozilla/5.0" -headers "' + $requestHeaders + '" -i "' + $item.url + '" -c copy "' + $partial + '"'
+    } elseif ($requiresAudio) {
       $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -i "' + $audioUrl + '" -map 0:v:0 -map 1:a:0 -c copy "' + $partial + '"'
     } else {
       $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -c copy "' + $partial + '"'
@@ -200,7 +214,29 @@ try {
         foreach ($item in $new) {
           $uri = $null
           $subtitleUri = $null
-          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -notin @('cdn.narto-drama.com','cdn.dramadizilerim.xyz')) -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -notin @('cdn.narto-drama.com','cdn.dramadizilerim.xyz') -and $uri.AbsolutePath -notmatch '\.m3u8) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
+        }
+        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
+        Advance
+        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
+      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $queue.Clear()
+        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
+        Reply $ctx 200 @{cancelled=$true}
+      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
+    } catch {
+      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
+      Write-Warning $_.Exception.Message
+    }
+  }
+} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
+  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+  if ($listener.IsListening) { $listener.Stop() }
+  $listener.Close()
+}
+)) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
           if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
