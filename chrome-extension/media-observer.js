@@ -5,7 +5,7 @@ function inspect(url) {
   if (typeof url !== "string" || seen.has(url)) return;
   let u;try {u=new URL(url);} catch {return;}
   if (u.protocol!=="https:" || !u.pathname.toLowerCase().endsWith(".m3u8")) return;
-  if (u.hostname!=="masdramas.com" && !u.hostname.endsWith(".hotplot.vip")) return;
+  if (u.hostname!=="masdramas.com" && !u.hostname.endsWith(".hotplot.vip") && u.hostname!=="dramaflix.net") return;
   seen.add(url);
   chrome.runtime.sendMessage({type:"MEDIA_FOUND",url:u.href},()=>{void chrome.runtime.lastError;});
 }
