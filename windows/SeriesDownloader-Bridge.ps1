@@ -44,7 +44,7 @@ function EmbedSubtitles($video, $subtitle, $mkv) {
 
 function HasVideo($path) {
   if (-not (Test-Path $path)) { return $false }
-  $video = & ffprobe -v error -select_streams 'v:0' -show_entries 'stream=codec_type' -of 'csv=p=0' $path 2>$null
+  $video = & ffprobe -v error -select_streams 'v:0' -show_entries stream=codec_type -of csv=p=0 $path 2>$null
   return (([string]($video -join ' ')).Trim()) -match 'video'
 }
 
@@ -66,9 +66,9 @@ function Advance {
       $duration = & ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $script:current.partial 2>$null
       $seconds = 0.0
       $playable = [double]::TryParse(([string]$duration),[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$seconds) -and $seconds -gt 1
-      if ($playable -and $script:current.isDramaExpress -and -not (HasVideo $script:current.partial)) {
+      if ($playable -and $script:current.isDramaExpress -and (-not (HasVideo $script:current.partial) -or -not (HasAudio $script:current.partial))) {
         $playable = $false
-        Write-Warning ('DramaExpress: el archivo no contiene video reconocible: ' + $script:current.name)
+        Write-Warning ('DramaExpress: faltan pistas validas de video o audio: ' + $script:current.name)
       }
       if ($playable -and $script:current.requiresAudio -and -not (HasAudio $script:current.partial)) {
         $playable = $false
@@ -105,8 +105,8 @@ function Advance {
         catch { Write-Warning ('No se pudieron obtener subtitulos de ' + $name) }
       }
     }
-    $isDramaExpress = ([string]$item.url -match '^https://(?:cdn\.dramadizilerim\.xyz|akamai-static\.shorttv\.live)/.*\.m3u8(?:\?.*)?
-    $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$') -or $isDramaExpress
+    $isDramaExpress = ([string]$item.url -match '^https://(?:cdn\.dramadizilerim\.xyz|akamai-static\.shorttv\.live)/.*\.m3u8(?:\?.*)?$')
+    $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$')
     $audioUrl = if ($requiresAudio) { [string]$item.url -replace '/s3hls/2\.m3u8', '/s3hls/0.m3u8' } else { '' }
     if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv))) { $script:completed++; continue }
     if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) {
@@ -215,194 +215,15 @@ try {
           $uri = $null
           $subtitleUri = $null
           $urlValid = [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri)
-          $isDirectMp4 = $urlValid -and $uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -match '\.mp4$'
-          $isProviderHls = $uri -and $uri.Host -in @('suikora.com','www.suikora.com','masdramas.com','cdn.dramadizilerim.xyz','akamai-static.shorttv.live')
-          $isOtherHls = $uri -and $uri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$'
+          if (-not $urlValid) { $valid=$false; break }
+          $isDirectMp4 = $uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -match '\.mp4$'
+          $isProviderHls = $uri.Host -in @('suikora.com','www.suikora.com','masdramas.com','cdn.dramadizilerim.xyz','akamai-static.shorttv.live')
+          $isOtherHls = $uri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$'
           $isHls = ($isProviderHls -or $isOtherHls) -and $uri.AbsolutePath -match '\.m3u8$'
-          if (-not $urlValid -or $uri.Scheme -ne 'https' -or (-not $isDirectMp4 -and -not $isHls) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          if ($uri.Scheme -ne 'https' -or (-not $isDirectMp4 -and -not $isHls) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
           if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
         }
-        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
-        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
-        Advance
-        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
-      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
-        $queue.Clear()
-        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
-        Reply $ctx 200 @{cancelled=$true}
-      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
-    } catch {
-      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
-      Write-Warning $_.Exception.Message
-    }
-  }
-} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
-  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-  if ($listener.IsListening) { $listener.Stop() }
-  $listener.Close()
-}
-)) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
-          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
-        }
-        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
-        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
-        Advance
-        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
-      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
-        $queue.Clear()
-        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
-        Reply $ctx 200 @{cancelled=$true}
-      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
-    } catch {
-      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
-      Write-Warning $_.Exception.Message
-    }
-  }
-} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
-  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-  if ($listener.IsListening) { $listener.Stop() }
-  $listener.Close()
-}
-)
-    $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$') -or $isDramaExpress
-    $audioUrl = if ($requiresAudio) { [string]$item.url -replace '/s3hls/2\.m3u8', '/s3hls/0.m3u8' } else { '' }
-    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv))) { $script:completed++; continue }
-    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) {
-      EmbedSubtitles $path $subFile $mkv
-      if (Test-Path $mkv) { $script:completed++ } else { $script:completed++; $script:warnings++; Write-Warning ('El MP4 existe, pero no se pudo crear el MKV con subtitulos') }
-      continue
-    }
-    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) { $script:completed++; continue }
-    $partial = Join-Path $seriesFolder ('parcial_' + $name)
-    if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
-    $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
-    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio;isDramaExpress=$isDramaExpress}
-    if ($isDramaExpress) {
-      $requestHeaders = "Origin: https://dramaexpress.net" + "`r`n" + "Referer: https://dramaexpress.net/" + "`r`n"
-      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -user_agent "Mozilla/5.0" -headers "' + $requestHeaders + '" -i "' + $item.url + '" -c copy "' + $partial + '"'
-    } elseif ($requiresAudio) {
-      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -i "' + $audioUrl + '" -map 0:v:0 -map 1:a:0 -c copy "' + $partial + '"'
-    } else {
-      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -c copy "' + $partial + '"'
-    }
-    $script:process = Start-Process -FilePath 'ffmpeg.exe' -ArgumentList $argsText -PassThru -WindowStyle Hidden -RedirectStandardError $log
-    Write-Host ('Descargando: ' + $name) -ForegroundColor Cyan
-    break
-  }
-}
-
-try {
-  if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw 'FFmpeg no se encuentra en PATH.' }
-  New-Item -ItemType Directory -Force -Path $root | Out-Null
-  $listener.Start()
-  Write-Host 'Series Downloader - Puente local iniciado' -ForegroundColor Green
-  Write-Host 'Página: https://grupobure.github.io/SeriesDownloader/'
-  Write-Host ('Código de conexión: ' + $token) -ForegroundColor Yellow
-  Write-Host 'Copia este código en la página. Deja esta ventana abierta.'
-  Write-Host 'Para detenerlo, cierra esta ventana o pulsa Ctrl+C.'
-  while ($listener.IsListening) {
-    $ctx = $listener.GetContext()
-    try {
-      if ($ctx.Request.Headers['Origin'] -cne $origin) { Reply $ctx 403 @{error='Origen no autorizado'}; continue }
-      if ($ctx.Request.HttpMethod -eq 'OPTIONS') {
-        $ctx.Response.StatusCode=204
-        $ctx.Response.Headers.Add('Access-Control-Allow-Origin',$origin)
-        $ctx.Response.Headers.Add('Access-Control-Allow-Methods','GET, POST, OPTIONS')
-        $ctx.Response.Headers.Add('Access-Control-Allow-Headers','Content-Type, X-Series-Key')
-        $ctx.Response.Headers.Add('Access-Control-Allow-Private-Network','true')
-        $ctx.Response.Close()
-        continue
-      }
-      if ($ctx.Request.Headers['X-Series-Key'] -cne $token) { Reply $ctx 401 @{error='Código de conexión incorrecto'}; continue }
-      Advance
-      $path = $ctx.Request.Url.AbsolutePath
-      if ($path -eq '/status' -and $ctx.Request.HttpMethod -eq 'GET') {
-        Reply $ctx 200 @{running=($null -ne $process); current=$(if($current){$current.name}else{''}); pending=$queue.Count; completed=$completed; failed=$failed; warnings=$warnings; folder=$root}
-      } elseif ($path -eq '/metadata' -and $ctx.Request.HttpMethod -eq 'POST') {
-        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
-        $data = ConvertFrom-Json -InputObject $reader.ReadToEnd()
-        $uri = $null
-        if (-not [Uri]::TryCreate([string]$data.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.Host -ne 'hotplot.ai' -or $uri.AbsolutePath -notmatch '^/[a-zA-Z-]+/watch/[a-f0-9-]+/?$') { Reply $ctx 400 @{error='Enlace de HotPlot inválido'}; continue }
-        $response = Invoke-WebRequest -Uri $uri.AbsoluteUri -UseBasicParsing -TimeoutSec 25
-        $html = $response.Content.Replace('\"','"')
-        $numberMatch = [regex]::Match($html,'"episodeNo":(\d+)')
-        $slugMatch = [regex]::Match($html,'"showSlug":"([a-z0-9-]+)"')
-        if (-not $numberMatch.Success -or -not $slugMatch.Success) { Reply $ctx 422 @{error='No se identificaron los datos del capítulo'}; continue }
-        $series = $slugMatch.Groups[1].Value -replace '-\d+$',''
-        Reply $ctx 200 @{number=[int]$numberMatch.Groups[1].Value;series=$series}
-      } elseif ($path -eq '/analyze' -and $ctx.Request.HttpMethod -eq 'POST') {
-        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
-        $data = ConvertFrom-Json -InputObject $reader.ReadToEnd()
-        $uri = $null
-        if (-not [Uri]::TryCreate([string]$data.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or $uri.Host -ne 'suikora.com' -or $uri.AbsolutePath -notmatch '^/es/drama/[a-z0-9-]+(/\d+)?/?$') { Reply $ctx 400 @{error='Solo se admiten enlaces públicos de series de Suikora'}; continue }
-        $page = $uri.GetLeftPart([UriPartial]::Path).TrimEnd('/')
-        if ($page -notmatch '/\d+$') { $page += '/1' }
-        $response = Invoke-WebRequest -Uri $page -UseBasicParsing -TimeoutSec 25
-        $html = $response.Content.Replace('\"','"')
-        $pattern = '"number":(\d+),"servers":\[\{[\s\S]*?"url":"([^"]+)","hash":"([A-Za-z0-9_-]+)","subtitleUrl":(null|"([^"]+)")'
-        $matches = [regex]::Matches($html,$pattern)
-        $items = New-Object System.Collections.ArrayList
-        $seen = @{}
-        foreach ($match in $matches) {
-          $n = [int]$match.Groups[1].Value
-          if ($seen.ContainsKey($n)) { continue }
-          $seen[$n] = $true
-          $original = $match.Groups[2].Value.Replace('\/','/')
-          $originalUri = $null
-          if (-not [Uri]::TryCreate($original,[UriKind]::Absolute,[ref]$originalUri)) { continue }
-          $source = 'https://suikora.com/s/'+$match.Groups[3].Value+'/index.m3u8?full=1'
-          if ($originalUri.Scheme -eq 'https' -and $originalUri.AbsolutePath -match '\.m3u8$' -and $originalUri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|crazymaplestudios\.com)$') { $source = $original }
-          if ($originalUri.Host -eq 'cdn.narto-drama.com' -and $originalUri.AbsolutePath -match '\.mp4$' -and $originalUri.Scheme -eq 'https') { $source = $original }
-          $subtitle = ''
-          if ($match.Groups[5].Success) { $subtitle = 'https://suikora.com' + $match.Groups[5].Value }
-          [void]$items.Add(@{number=$n;url=$source;sub=$subtitle})
-        }
-        if ($items.Count -eq 0) { Reply $ctx 422 @{error='No encontramos capítulos en esta página'}; continue }
-        $totalMatch = [regex]::Match($html,'"totalEpisodes":(\d+)')
-        $total = $(if ($totalMatch.Success) {[int]$totalMatch.Groups[1].Value} else {$items.Count})
-        Reply $ctx 200 @{items=@($items.ToArray());total=$total}
-      } elseif ($path -eq '/queue' -and $ctx.Request.HttpMethod -eq 'POST') {
-        if ($ctx.Request.ContentLength64 -gt 250000) { Reply $ctx 413 @{error='Solicitud demasiado grande'}; continue }
-        $reader = New-Object IO.StreamReader($ctx.Request.InputStream)
-        $raw = $reader.ReadToEnd()
-        $data = ConvertFrom-Json -InputObject $raw
-        $new = @($data.items)
-        if ($new.Count -lt 1 -or $new.Count -gt 200) { Reply $ctx 400 @{error='Cantidad inválida de capítulos'}; continue }
-        $valid = $true
-        foreach ($item in $new) {
-          $uri = $null
-          $subtitleUri = $null
-          $urlValid = [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri)
-          $isDirectMp4 = $urlValid -and $uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -match '\.mp4$'
-          $isProviderHls = $uri -and $uri.Host -in @('suikora.com','www.suikora.com','masdramas.com','cdn.dramadizilerim.xyz')
-          $isOtherHls = $uri -and $uri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$'
-          $isHls = ($isProviderHls -or $isOtherHls) -and $uri.AbsolutePath -match '\.m3u8$'
-          if (-not $urlValid -or $uri.Scheme -ne 'https' -or (-not $isDirectMp4 -and -not $isHls) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
-          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
-        }
-        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
-        foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
-        Advance
-        Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
-      } elseif ($path -eq '/cancel' -and $ctx.Request.HttpMethod -eq 'POST') {
-        $queue.Clear()
-        if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; $process.Dispose(); $process=$null; $current=$null }
-        Reply $ctx 200 @{cancelled=$true}
-      } else { Reply $ctx 404 @{error='Ruta no encontrada'} }
-    } catch {
-      try { Reply $ctx 500 @{error=$_.Exception.Message} } catch {}
-      Write-Warning $_.Exception.Message
-    }
-  }
-} catch { Write-Host $_.Exception.Message -ForegroundColor Red; Read-Host 'Enter para cerrar' } finally {
-  if ($null -ne $process) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-  if ($listener.IsListening) { $listener.Stop() }
-  $listener.Close()
-}
-)) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
-          if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
-        }
-        if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
+        if (-not $valid) { Reply $ctx 400 @{error='No se admite esta fuente HTTPS o los datos del capítulo son inválidos'}; continue }
         foreach ($item in $new) { [void]$queue.Add(@{number=[int]$item.number;url=[string]$item.url;series=[string]$item.series;sub=[string]$item.sub;embed=[bool]$item.embed}) }
         Advance
         Reply $ctx 200 @{accepted=$new.Count; pending=$queue.Count}
