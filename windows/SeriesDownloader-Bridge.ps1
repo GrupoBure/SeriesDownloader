@@ -66,9 +66,16 @@ function Advance {
       $duration = & ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $script:current.partial 2>$null
       $seconds = 0.0
       $playable = [double]::TryParse(([string]$duration),[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$seconds) -and $seconds -gt 1
-      if ($playable -and $script:current.isDramaExpress -and (-not (HasVideo $script:current.partial) -or -not (HasAudio $script:current.partial))) {
-        $playable = $false
-        Write-Warning ('DramaExpress: faltan pistas validas de video o audio: ' + $script:current.name)
+      if ($playable -and $script:current.isDramaExpress) {
+        $hasVideo = HasVideo $script:current.partial
+        $hasAudio = HasAudio $script:current.partial
+        if (-not $hasVideo -or -not $hasAudio) {
+          $playable = $false
+          $missingTracks = @()
+          if (-not $hasVideo) { $missingTracks += 'video' }
+          if (-not $hasAudio) { $missingTracks += 'audio' }
+          Write-Warning ('DramaExpress: FFmpeg proceso la fuente, pero el MP4 no tiene pista(s) reconocible(s) de ' + ($missingTracks -join ' y ') + ': ' + $script:current.name)
+        }
       }
       if ($playable -and $script:current.requiresAudio -and -not (HasAudio $script:current.partial)) {
         $playable = $false
@@ -87,6 +94,13 @@ function Advance {
     } else {
       $script:failed++
       Write-Host ('Error: ' + $script:current.name) -ForegroundColor Red
+      if ($script:current.isDramaExpress) {
+        $relatedPending = @($script:queue | Where-Object { $_.series -eq $script:current.series -and [string]$_.url -match '^https://(?:cdn[.]dramadizilerim[.]xyz|akamai-static[.]shorttv[.]live)/' })
+        foreach ($itemToRemove in $relatedPending) { [void]$script:queue.Remove($itemToRemove) }
+        if ($relatedPending.Count -gt 0) {
+          Write-Warning ('DramaExpress: se detuvieron ' + $relatedPending.Count + ' descargas pendientes de esta serie tras detectar una salida sin video o audio. No se marcaron como completadas.')
+        }
+      }
     }
     $script:current = $null
   }
@@ -108,13 +122,13 @@ function Advance {
     $isDramaExpress = ([string]$item.url -match '^https://(?:cdn\.dramadizilerim\.xyz|akamai-static\.shorttv\.live)/.*\.m3u8(?:\?.*)?$')
     $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$')
     $audioUrl = if ($requiresAudio) { [string]$item.url -replace '/s3hls/2\.m3u8', '/s3hls/0.m3u8' } else { '' }
-    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv))) { $script:completed++; continue }
-    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) {
+    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv)) -and (-not $isDramaExpress -or ((HasVideo $mkv) -and (HasAudio $mkv)))) { $script:completed++; continue }
+    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path)) -and (-not $isDramaExpress -or ((HasVideo $path) -and (HasAudio $path)))) {
       EmbedSubtitles $path $subFile $mkv
       if (Test-Path $mkv) { $script:completed++ } else { $script:completed++; $script:warnings++; Write-Warning ('El MP4 existe, pero no se pudo crear el MKV con subtitulos') }
       continue
     }
-    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) { $script:completed++; continue }
+    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path)) -and (-not $isDramaExpress -or ((HasVideo $path) -and (HasAudio $path)))) { $script:completed++; continue }
     $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
     $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
