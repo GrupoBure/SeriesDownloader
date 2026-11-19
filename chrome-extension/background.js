@@ -6,7 +6,7 @@ function report(tabId, payload) {chrome.tabs.sendMessage(tabId, payload, () => {
 async function capture(tabId, url, via) {
   let parsed;try{parsed=new URL(url);}catch{return false;}
   if(parsed.protocol!=="https:"||!parsed.pathname.toLowerCase().endsWith(".m3u8")||
-     !(parsed.hostname==="masdramas.com"||parsed.hostname.endsWith(".hotplot.vip")||parsed.hostname==="cdn.dramadizilerim.xyz"))return false;
+     !(parsed.hostname==="masdramas.com"||parsed.hostname.endsWith(".hotplot.vip")||(parsed.hostname==="cdn.dramadizilerim.xyz"||parsed.hostname==="akamai-static.shorttv.live")))return false;
   const key=KEY(tabId),session=(await chrome.storage.session.get(key))[key];
   if(!session||session.captured||Date.now()-session.created>TTL_MS)return false;
   if(parsed.hostname==="masdramas.com"&&/\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname))
@@ -83,7 +83,7 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
   void (async () => {
     let parsed;try {parsed=new URL(details.url);} catch {return;}
     if (parsed.protocol!=="https:" || !parsed.pathname.toLowerCase().endsWith(".m3u8")) return;
-    if (!(parsed.hostname==="masdramas.com" || parsed.hostname.endsWith(".hotplot.vip") || parsed.hostname==="cdn.dramadizilerim.xyz")) return;
+    if (!(parsed.hostname==="masdramas.com" || parsed.hostname.endsWith(".hotplot.vip") || (parsed.hostname==="cdn.dramadizilerim.xyz"||parsed.hostname==="akamai-static.shorttv.live"))) return;
     let key=KEY(details.tabId);
     let session=(await chrome.storage.session.get(key))[key];
     if (!session && details.tabId===-1) {
@@ -92,7 +92,7 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
       const initiator=details.initiator||"";
       const matchingOrigin=(parsed.hostname==="masdramas.com" && initiator==="https://masdramas.com") ||
         (parsed.hostname.endsWith(".hotplot.vip") && initiator==="https://hotplot.ai") ||
-        (parsed.hostname==="cdn.dramadizilerim.xyz" && initiator==="https://dramaexpress.net");
+        ((parsed.hostname==="cdn.dramadizilerim.xyz"||parsed.hostname==="akamai-static.shorttv.live") && initiator==="https://dramaexpress.net");
       if (matchingOrigin) {
         const stored=await chrome.storage.session.get(null);
         // Una captura ya completada no debe bloquear la asociación del
@@ -105,7 +105,7 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
     if (!session || session.captured || Date.now()-session.created>TTL_MS) return;
     await capture(Number(key.slice("episode_".length)),parsed.href,"red Chrome");
   })().catch(error=>console.error("[Series Downloader] Error de detección",error));
-},{urls:["https://masdramas.com/*","https://*.hotplot.vip/*","https://cdn.dramadizilerim.xyz/*"]});
+},{urls:["https://masdramas.com/*","https://*.hotplot.vip/*","https://cdn.dramadizilerim.xyz/*","https://akamai-static.shorttv.live/*"]});
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (!alarm.name.startsWith("episode_")) return;
   const session=(await chrome.storage.session.get(alarm.name))[alarm.name];
