@@ -6,7 +6,7 @@ function report(tabId, payload) {chrome.tabs.sendMessage(tabId, payload, () => {
 async function capture(tabId, url, via) {
   let parsed;try{parsed=new URL(url);}catch{return false;}
   if(parsed.protocol!=="https:"||!parsed.pathname.toLowerCase().endsWith(".m3u8")||
-     !(parsed.hostname==="masdramas.com"||parsed.hostname.endsWith(".hotplot.vip")))return false;
+     !(parsed.hostname==="masdramas.com"||parsed.hostname.endsWith(".hotplot.vip")||parsed.hostname==="dramaflix.net"))return false;
   const key=KEY(tabId),session=(await chrome.storage.session.get(key))[key];
   if(!session||session.captured||Date.now()-session.created>TTL_MS)return false;
   if(parsed.hostname==="masdramas.com"&&/\/s3hls\/[012]\.m3u8$/i.test(parsed.pathname))
@@ -26,7 +26,7 @@ async function capture(tabId, url, via) {
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if(message?.type==="MEDIA_FOUND"&&Number.isInteger(sender.tab?.id)&&
-      (sender.url?.startsWith("https://hotplot.ai/")||sender.url?.startsWith("https://masdramas.com/"))){
+      (sender.url?.startsWith("https://hotplot.ai/")||sender.url?.startsWith("https://masdramas.com/")||sender.url?.startsWith("https://dramaflix.net/es/drama/"))){
     void capture(sender.tab.id,message.url,"reproductor").catch(e=>console.error("[Series Downloader] Error de observación",e));
     return;
   }
@@ -51,12 +51,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return;
   }
   if (message?.type !== "START") return;
-  if (!Number.isInteger(sender.tab?.id) || sender.url?.split(/[?#]/)[0] !== ORIGIN) {
+  if (!Number.isInteger(sender.tab?.id) || ![ORIGIN,ORIGIN+"preview-dramaflix.html"].includes(sender.url?.split(/[?#]/)[0])) {
     respond({ok:false,error:"Página de origen no autorizada"});return;
   }
   let page;
   try {page = new URL(message.url);} catch {respond({ok:false,error:"Enlace inválido"});return;}
-  if (page.protocol !== "https:" || !["masdramas.com","hotplot.ai"].includes(page.hostname)) {
+  if (page.protocol !== "https:" || !["masdramas.com","hotplot.ai","dramaflix.net"].includes(page.hostname)) {
     respond({ok:false,error:"Sitio no compatible"});return;
   }
   // Primero registrar la pestaña y después navegar: Chrome puede pedir el HLS
@@ -83,7 +83,7 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
   void (async () => {
     let parsed;try {parsed=new URL(details.url);} catch {return;}
     if (parsed.protocol!=="https:" || !parsed.pathname.toLowerCase().endsWith(".m3u8")) return;
-    if (!(parsed.hostname==="masdramas.com" || parsed.hostname.endsWith(".hotplot.vip"))) return;
+    if (!(parsed.hostname==="masdramas.com" || parsed.hostname.endsWith(".hotplot.vip") || parsed.hostname==="dramaflix.net")) return;
     let key=KEY(details.tabId);
     let session=(await chrome.storage.session.get(key))[key];
     if (!session && details.tabId===-1) {
@@ -91,7 +91,8 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
       // asociarlas si existe exactamente una detección pendiente del sitio.
       const initiator=details.initiator||"";
       const matchingOrigin=(parsed.hostname==="masdramas.com" && initiator==="https://masdramas.com") ||
-        (parsed.hostname.endsWith(".hotplot.vip") && initiator==="https://hotplot.ai");
+        (parsed.hostname.endsWith(".hotplot.vip") && initiator==="https://hotplot.ai") ||
+        (parsed.hostname==="dramaflix.net" && initiator==="https://dramaflix.net");
       if (matchingOrigin) {
         const stored=await chrome.storage.session.get(null);
         // Una captura ya completada no debe bloquear la asociación del
@@ -104,7 +105,7 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
     if (!session || session.captured || Date.now()-session.created>TTL_MS) return;
     await capture(Number(key.slice("episode_".length)),parsed.href,"red Chrome");
   })().catch(error=>console.error("[Series Downloader] Error de detección",error));
-},{urls:["https://masdramas.com/*","https://*.hotplot.vip/*"]});
+},{urls:["https://masdramas.com/*","https://*.hotplot.vip/*","https://dramaflix.net/*"]});
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (!alarm.name.startsWith("episode_")) return;
   const session=(await chrome.storage.session.get(alarm.name))[alarm.name];
