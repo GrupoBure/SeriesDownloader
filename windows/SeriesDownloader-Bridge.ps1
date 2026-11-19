@@ -42,6 +42,12 @@ function EmbedSubtitles($video, $subtitle, $mkv) {
   } else { Write-Warning ('No se pudo integrar el subtitulo: ' + $mkv) }
 }
 
+function HasVideo($path) {
+  if (-not (Test-Path $path)) { return $false }
+  $video = & ffprobe -v error -select_streams 'v:0' -show_entries stream=codec_name -of csv=p=0 $path 2>$null
+  return (([string]($video -join ' ')).Trim()) -match '^(h264|hevc|av1|vp9|mpeg4)$'
+}
+
 function HasAudio($path) {
   if (-not (Test-Path $path)) { return $false }
   $audio = & ffprobe -v error -select_streams 'a:0' -show_entries 'stream=codec_type' -of 'csv=p=0' $path 2>$null
@@ -60,6 +66,10 @@ function Advance {
       $duration = & ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $script:current.partial 2>$null
       $seconds = 0.0
       $playable = [double]::TryParse(([string]$duration),[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$seconds) -and $seconds -gt 1
+      if ($playable -and $script:current.isDramaFlix -and (-not (HasVideo $script:current.partial) -or -not (HasAudio $script:current.partial))) {
+        $playable = $false
+        Write-Warning ('DramaFlix: MP4 sin pistas validas de video y audio: ' + $script:current.name)
+      }
       if ($playable -and $script:current.requiresAudio -and -not (HasAudio $script:current.partial)) {
         $playable = $false
         Write-Warning ('El archivo no contiene pista de sonido: ' + $script:current.name)
@@ -95,20 +105,24 @@ function Advance {
         catch { Write-Warning ('No se pudieron obtener subtitulos de ' + $name) }
       }
     }
+    $isDramaFlix = ([string]$item.url -match '^https://dramaflix[.]net/px/bk/hls/[A-Za-z0-9_-]+/main[.]m3u8[?]auth_key=[A-Za-z0-9_-]+$')
     $requiresAudio = ([string]$item.url -match '^https://masdramas\.com/stream/[^/]+/s3hls/2\.m3u8(?:\?.*)?$')
     $audioUrl = if ($requiresAudio) { [string]$item.url -replace '/s3hls/2\.m3u8', '/s3hls/0.m3u8' } else { '' }
-    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv))) { $script:completed++; continue }
-    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) {
+    if ($item.embed -and (Test-Path $mkv) -and ((Get-Item $mkv).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $mkv)) -and (-not $isDramaFlix -or ((HasVideo $mkv) -and (HasAudio $mkv)))) { $script:completed++; continue }
+    if ($item.embed -and (Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path)) -and (-not $isDramaFlix -or ((HasVideo $path) -and (HasAudio $path)))) {
       EmbedSubtitles $path $subFile $mkv
       if (Test-Path $mkv) { $script:completed++ } else { $script:completed++; $script:warnings++; Write-Warning ('El MP4 existe, pero no se pudo crear el MKV con subtitulos') }
       continue
     }
-    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path))) { $script:completed++; continue }
+    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and (-not $requiresAudio -or (HasAudio $path)) -and (-not $isDramaFlix -or ((HasVideo $path) -and (HasAudio $path)))) { $script:completed++; continue }
     $partial = Join-Path $seriesFolder ('parcial_' + $name)
     if (Test-Path $partial) { Remove-Item -LiteralPath $partial -Force }
     $log = Join-Path $seriesFolder ('log_' + $item.number + '.txt')
-    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio}
-    if ($requiresAudio) {
+    $script:current = @{name=$name;destination=$path;partial=$partial;log=$log;embed=$item.embed;subFile=$subFile;mkv=$mkv;requiresAudio=$requiresAudio;isDramaFlix=$isDramaFlix}
+    if ($isDramaFlix) {
+      $requestHeaders = "Origin: https://dramaflix.net" + "`r`n" + "Referer: https://dramaflix.net/" + "`r`n"
+      $argsText = '-hide_banner -loglevel error -stats -nostdin -y -user_agent "Mozilla/5.0" -headers "' + $requestHeaders + '" -i "' + $item.url + '" -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart "' + $partial + '"'
+    } elseif ($requiresAudio) {
       $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -i "' + $audioUrl + '" -map 0:v:0 -map 1:a:0 -c copy "' + $partial + '"'
     } else {
       $argsText = '-hide_banner -loglevel error -stats -nostdin -y -i "' + $item.url + '" -c copy "' + $partial + '"'
@@ -200,7 +214,13 @@ try {
         foreach ($item in $new) {
           $uri = $null
           $subtitleUri = $null
-          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -ne 'cdn.narto-drama.com') -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -ne 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.m3u8$')) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          $urlValid = [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri)
+          if (-not $urlValid) { $valid=$false; break }
+          $isMp4 = $uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -match '[.]mp4$'
+          $isHlsHost = $uri.Host -in @('suikora.com','www.suikora.com','masdramas.com') -or $uri.Host -match '(^|[.])(wolftv[.]online|mydramawave[.]com|hotplot[.]vip|crazymaplestudios[.]com)$'
+          $isHls = $isHlsHost -and $uri.AbsolutePath -match '[.]m3u8$'
+          $isDramaFlixUrl = $uri.Host -eq 'dramaflix.net' -and $uri.AbsolutePath -match '^/px/bk/hls/[A-Za-z0-9_-]+/main[.]m3u8$' -and $uri.Query -match '^[?]auth_key=[A-Za-z0-9_-]+$'
+          if ($uri.Scheme -ne 'https' -or (-not $isMp4 -and -not $isHls -and -not $isDramaFlixUrl) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
           if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
