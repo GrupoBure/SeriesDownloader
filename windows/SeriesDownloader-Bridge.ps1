@@ -214,7 +214,12 @@ try {
         foreach ($item in $new) {
           $uri = $null
           $subtitleUri = $null
-          if (-not [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or (($uri.Host -notin @('suikora.com','www.suikora.com','masdramas.com') -and $uri.Host -notmatch '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$') -and $uri.Host -notin @('cdn.narto-drama.com','cdn.dramadizilerim.xyz')) -or (($uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -notmatch '\.mp4$') -or ($uri.Host -notin @('cdn.narto-drama.com','cdn.dramadizilerim.xyz') -and $uri.AbsolutePath -notmatch '\.m3u8) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
+          $urlValid = [Uri]::TryCreate([string]$item.url,[UriKind]::Absolute,[ref]$uri)
+          $isDirectMp4 = $urlValid -and $uri.Host -eq 'cdn.narto-drama.com' -and $uri.AbsolutePath -match '\.mp4$'
+          $isProviderHls = $uri -and $uri.Host -in @('suikora.com','www.suikora.com','masdramas.com','cdn.dramadizilerim.xyz')
+          $isOtherHls = $uri -and $uri.Host -match '(^|\.)(wolftv\.online|mydramawave\.com|hotplot\.vip|crazymaplestudios\.com)$'
+          $isHls = ($isProviderHls -or $isOtherHls) -and $uri.AbsolutePath -match '\.m3u8$'
+          if (-not $urlValid -or $uri.Scheme -ne 'https' -or (-not $isDirectMp4 -and -not $isHls) -or [int]$item.number -lt 1 -or [int]$item.number -gt 999 -or [string]$item.series -notmatch '^[a-z0-9-]{1,80}$') { $valid=$false; break }
           if ($item.sub -and (-not [Uri]::TryCreate([string]$item.sub,[UriKind]::Absolute,[ref]$subtitleUri) -or $subtitleUri.Scheme -ne 'https' -or $subtitleUri.Host -ne 'suikora.com' -or $subtitleUri.AbsolutePath -notmatch '^/s/[A-Za-z0-9_-]+/sub$')) { $valid=$false; break }
         }
         if (-not $valid) { Reply $ctx 400 @{error='Solo se permiten listas HLS HTTPS de Suikora'}; continue }
