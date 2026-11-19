@@ -51,7 +51,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return;
   }
   if (message?.type !== "START") return;
-  if (!Number.isInteger(sender.tab?.id) || sender.url?.split(/[?#]/)[0] !== ORIGIN) {
+  if (!Number.isInteger(sender.tab?.id) || ![ORIGIN,ORIGIN+"preview-dramaexpress.html"].includes(sender.url?.split(/[?#]/)[0])) {
     respond({ok:false,error:"Página de origen no autorizada"});return;
   }
   let page;
