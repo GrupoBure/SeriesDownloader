@@ -13,7 +13,8 @@
     "https://masdramas.com/*",
     "https://*.hotplot.vip/*",
     "https://dramaexpress.net/*",
-    "https://cdn.dramadizilerim.xyz/*"
+    "https://cdn.dramadizilerim.xyz/*",
+    "https://akamai-static.shorttv.live/*"
   ],
   "background": {
     "service_worker": "background.js"
