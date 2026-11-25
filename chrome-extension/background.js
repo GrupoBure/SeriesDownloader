@@ -67,7 +67,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     const id=tab.id;
     try {
-      await chrome.storage.session.set({[KEY(id)]:{sourceTabId:sender.tab.id,requestId:message.requestId,created:Date.now()}});
+      await chrome.storage.session.set({[KEY(id)]:{sourceTabId:sender.tab.id,requestId:message.requestId,created:Date.now(),targetHost:page.hostname}});
       await chrome.alarms.create(KEY(id),{delayInMinutes:TTL_MS/60000});
       console.info("[Series Downloader] Detección iniciada", {tabId:id,site:page.hostname});
       await chrome.tabs.update(id,{url:page.href});
@@ -93,11 +93,14 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
       const matchingOrigin=(parsed.hostname==="masdramas.com" && initiator==="https://masdramas.com") ||
         (parsed.hostname.endsWith(".hotplot.vip") && initiator==="https://hotplot.ai") ||
         (parsed.hostname==="dramaflix.net" && initiator==="https://dramaflix.net");
-      if (matchingOrigin) {
+      if (matchingOrigin || parsed.hostname==="dramaflix.net") {
+        // Un reproductor dentro de un iframe/worker puede usar otro initiator
+        // y tabId=-1: asociar únicamente si hay una sola sesión pendiente
+        // del mismo dominio, nunca con sesiones de otro proveedor.
         const stored=await chrome.storage.session.get(null);
         // Una captura ya completada no debe bloquear la asociación del
         // siguiente capítulo cuando Chrome omite tabId en la petición HLS.
-        const pending=Object.entries(stored).filter(([k,v])=>k.startsWith("episode_")&&v&&!v.captured&&Date.now()-v.created<TTL_MS);
+        const pending=Object.entries(stored).filter(([k,v])=>k.startsWith("episode_")&&v&&!v.captured&&Date.now()-v.created<TTL_MS&&v.targetHost===parsed.hostname);
         if (pending.length===1) {[key,session]=pending[0];}
       }
     }
@@ -119,5 +122,5 @@ chrome.tabs.onRemoved.addListener(async tabId => {
   if (!session) return;
   await chrome.storage.session.remove(key);
   await chrome.alarms.clear(key);
-  if(!session.captured)report(session.sourceTabId,{type:"FAILED",requestId:session.requestId,reason:"Cerraste el capítulo antes de detectar video"});
+  if(!session.captured)report(session.sourceTabId,{type:"FAILED",requestId:session.requestId,reason:"Se cerró la pestaña de reproducción sin encontrar HLS. Abre el episodio desde la ficha real de DramaFlix y pega su dirección exacta (no una ruta supuesta)."});
 });
