@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Series Downloader - Detector de video",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Detecta listas HLS al reproducir episodios y las devuelve exclusivamente a Series Downloader.",
   "permissions": [
     "webRequest",
@@ -48,12 +48,13 @@
     },
     {
       "matches": [
-        "https://dramaflix.net/es/drama/*/episodio-*"
+        "https://dramaflix.net/es/drama/*"
       ],
       "js": [
         "media-observer.js"
       ],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ]
 }
